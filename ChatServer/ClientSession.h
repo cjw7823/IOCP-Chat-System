@@ -21,11 +21,12 @@ struct IoContext
 {
 	//비동기 수신 처리를 위한 OVERLAPPED 구조체.
 	WSAOVERLAPPED overlapped{};
-	WSABUF wsaBuf{};	//단지 Descriptor
-	char buffer[BUFFER_SIZE] {};
+	WSABUF wsaBuf{};				//단지 Descriptor
+	char buffer[BUFFER_SIZE] {};	//프로토콜 담김
 	IoType mType{};
 	ClientSession* owner = nullptr;
 
+	//IoType::Send일 경우 작성.
 	size_t totalLen = 0;
 	size_t transferredLen = 0;
 
@@ -35,5 +36,6 @@ struct IoContext
 	{
 		wsaBuf.buf = buffer;
 		wsaBuf.len = sizeof(buffer);
+		::ZeroMemory(&overlapped, sizeof(WSAOVERLAPPED));
 	}
 };

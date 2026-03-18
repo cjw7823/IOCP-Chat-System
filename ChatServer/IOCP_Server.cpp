@@ -98,10 +98,15 @@ void IOCP_Server::Run()
 void IOCP_Server::ReleaseServer()
 {
 	::EnterCriticalSection(&mCS);
-	for (auto& it : mSessions)
+	for (auto s : mSessions)
 	{
-		::shutdown(it->hSocket, SD_BOTH);
-		::closesocket(it->hSocket);
+		if (s->hSocket != INVALID_SOCKET)
+		{
+			::shutdown(s->hSocket, SD_BOTH);
+			::closesocket(s->hSocket);
+			s->hSocket = INVALID_SOCKET;
+		}
+		delete s;
 	}
 	mSessions.clear();
 	::LeaveCriticalSection(&mCS);
@@ -118,6 +123,14 @@ void IOCP_Server::ReleaseServer()
 		mhIOCP = NULL;
 	}
 
+	if (mShutdownEvent != NULL)
+	{
+		::CloseHandle(mShutdownEvent);
+		mShutdownEvent = NULL;
+	}
+
+	//추후 다른 스레드들의 핸들로 join 후 종료로직.
+
 	::Sleep(500);
 	::DeleteCriticalSection(&mCS);
 
@@ -128,23 +141,25 @@ void IOCP_Server::CloseSession(ClientSession* session)
 {
 	SOCKET& hSocket = session->hSocket;
 
-	::shutdown(hSocket, SD_BOTH);
-	::closesocket(hSocket);
-
-	::EnterCriticalSection(&mCS);
-
-	for (auto it = mSessions.begin(); it != mSessions.end(); it++)
 	{
-		if ((*it)->hSocket == hSocket)
-		{
-			//순서가 중요하지 않으므로 swap-and-pop
-			*it = std::move(mSessions.back());
-			mSessions.pop_back();
-			break;
-		}
+		::EnterCriticalSection(&mCS);
+
+		auto it = std::find(mSessions.begin(), mSessions.end(), session);
+		if (it != mSessions.end())
+			mSessions.erase(it);
+
+		::LeaveCriticalSection(&mCS);
 	}
 
-	::LeaveCriticalSection(&mCS);
+	if (hSocket != INVALID_SOCKET)
+	{
+		::shutdown(hSocket, SD_BOTH);
+		::closesocket(hSocket);
+		hSocket = INVALID_SOCKET;
+	}
+
+	delete session;
+	session = nullptr;
 }
 
 BOOL IOCP_Server::CtrlHandler(DWORD dwType)
@@ -160,20 +175,48 @@ BOOL IOCP_Server::CtrlHandler(DWORD dwType)
 
 void IOCP_Server::SendMessageAll(const std::string& str, ClientSession* session)
 {
-	std::vector<ClientSession*>::iterator it;
+	std::vector<ClientSession*> targets;
 
+	//락 최소화. 대상만 스냅샷.
 	::EnterCriticalSection(&mCS);
-
-	for (it = mSessions.begin(); it != mSessions.end(); it++)
+	for (auto s : mSessions)
 	{
-		if (session == *it) continue;
+		if (s != session)
+			targets.push_back(s);
+	}
+	::LeaveCriticalSection(&mCS);
 
-		IoContext* ctx = new IoContext(*it, IoType::Send);
-		::ZeroMemory(&ctx->overlapped, sizeof(WSAOVERLAPPED));
-		mApp->PostSend(*it, ctx, str.c_str(), str.size());
+	const size_t headerSize = sizeof(PacketHeader);
+	const size_t payloadSize = str.size();
+
+	PacketHeader header;
+	header.cmd = CMDCODE::ChatMessage;
+	header.payloadSize = htonl(static_cast<uint32_t>(payloadSize)); //호스트->네트워크
+
+	if (headerSize + str.size() > BUFFER_SIZE)
+	{
+		Log(u8"전송할 메세지 크기가 너무 큽니다.");
+		ErrorHandler(L"전송할 메세지 크기가 너무 큽니다.");
 	}
 
-	::LeaveCriticalSection(&mCS);
+	for (auto& s : targets)
+	{
+		IoContext* ctx = new IoContext(s, IoType::Send);
+		ctx->totalLen = headerSize + payloadSize;
+
+		memcpy(ctx->buffer, &header, headerSize);
+		memcpy(ctx->buffer + headerSize, str.c_str(), payloadSize);
+
+		//중요. recv는 상관없지만(최대 버퍼만큼 받으므로) send는 얼마나 보낼지
+		//Descriptor에 명시.
+		ctx->wsaBuf.len = static_cast<ULONG>(ctx->totalLen);
+
+		if (!PostSend(s, ctx))
+		{
+			delete ctx;
+			// 필요 시 session 정리
+		}
+	}
 }
 
 DWORD __stdcall IOCP_Server::IOCP_AcceptThread(LPVOID pParam)
@@ -189,25 +232,21 @@ DWORD __stdcall IOCP_Server::IOCP_AcceptThread(LPVOID pParam)
 		auto pNewUser = new ClientSession();
 		pNewUser->hSocket = clientSocket;
 
-		::EnterCriticalSection(&mApp->mCS);
-		mApp->mSessions.push_back(pNewUser);
-		::LeaveCriticalSection(&mApp->mCS);
-
-		IoContext* ctx = new IoContext(pNewUser, IoType::Recv);
-		::ZeroMemory(&ctx->overlapped, sizeof(WSAOVERLAPPED));
-
 		::CreateIoCompletionPort(
 			(HANDLE)clientSocket,
 			mApp->mhIOCP,
 			(ULONG_PTR)pNewUser, //IOCP Queue에 들어갈 소켓들을 구분할 키.
 			0);
 
-		if (!mApp->PostRecv(pNewUser, ctx))
+		if (!mApp->PostRecv(pNewUser))
 		{
-			delete ctx;
 			delete pNewUser;
 			ErrorHandler(L"WSARecv 등록에 실패했습니다.");
 		}
+
+		::EnterCriticalSection(&mApp->mCS);
+		mApp->mSessions.push_back(pNewUser);
+		::LeaveCriticalSection(&mApp->mCS);
 	}
 
 	return 0;
@@ -219,7 +258,7 @@ DWORD __stdcall IOCP_Server::IOCP_WorkerThread(LPVOID pParam)
 
 	ClientSession* pSession = nullptr;
 	LPWSAOVERLAPPED	pWol = NULL;
-	IoContext* ctx;
+	IoContext* ctx = nullptr;
 	DWORD dwTransferredSize = 0;
 
 	while (TRUE)
@@ -241,6 +280,17 @@ DWORD __stdcall IOCP_Server::IOCP_WorkerThread(LPVOID pParam)
 			break;
 		}
 
+		/*
+		*	힙에서 찾기.
+			overlapped 멤버의 위치를 기준으로 구조체 시작 주소를 역산.
+			IoContext 메모리
+			[ base 주소 ] ---------------------
+			| overlapped |  ← pOverlapped
+			| wsaBuf     |
+			| buffer     |
+			| type       |
+			----------------------------------
+		*/
 		ctx = CONTAINING_RECORD(pWol, IoContext, overlapped);
 
 		if (!bResult) //I/O는 완료됐지만 실패
@@ -251,25 +301,18 @@ DWORD __stdcall IOCP_Server::IOCP_WorkerThread(LPVOID pParam)
 			continue;
 		}
 
-		/*
-		overlapped 멤버의 위치를 기준으로 구조체 시작 주소를 역산.
-		IoContext 메모리
-		[ base 주소 ] ---------------------
-		| overlapped |  ← pOverlapped
-		| wsaBuf     |
-		| buffer     |
-		| type       |
-		----------------------------------
-		*/
-		
 		switch (ctx->mType)
 		{
 		case IoType::Recv:
-			mApp->OnRecvCompleted(pSession, ctx, dwTransferredSize);
+			if (!mApp->OnRecvCompleted(pSession, ctx, dwTransferredSize))
+				mApp->CloseSession(pSession);
 			break;
+
 		case IoType::Send:
-			mApp->OnSendCompleted(pSession, ctx, dwTransferredSize);
+			if (!mApp->OnSendCompleted(pSession, ctx, dwTransferredSize))
+				mApp->CloseSession(pSession);
 			break;
+
 		default:
 			break;
 		}
@@ -279,15 +322,12 @@ DWORD __stdcall IOCP_Server::IOCP_WorkerThread(LPVOID pParam)
 	return 0;
 }
 
-bool IOCP_Server::PostRecv(ClientSession* session, IoContext* ctx)
+bool IOCP_Server::PostRecv(ClientSession* session)
 {
+	IoContext* ctx = new IoContext(session, IoType::Recv);
+
 	DWORD dwReceiveSize = 0;
 	DWORD dwFlag = 0;
-
-	::ZeroMemory(&ctx->overlapped, sizeof(WSAOVERLAPPED));
-	ctx->mType = IoType::Recv;
-	ctx->wsaBuf.buf = ctx->buffer;
-	ctx->wsaBuf.len = BUFFER_SIZE;
 
 	int result = ::WSARecv(
 		session->hSocket,
@@ -303,24 +343,15 @@ bool IOCP_Server::PostRecv(ClientSession* session, IoContext* ctx)
 		int err = ::WSAGetLastError();
 		if (err != WSA_IO_PENDING)
 		{
+			delete ctx;
 			return false;
 		}
 	}
 	return true;
 }
 
-bool IOCP_Server::PostSend(ClientSession* session, IoContext* ctx, const char* data, size_t len)
+bool IOCP_Server::PostSend(ClientSession* session, IoContext* ctx)
 {
-	if (len > BUFFER_SIZE)
-		return false;
-
-	::ZeroMemory(&ctx->overlapped, sizeof(WSAOVERLAPPED));
-	ctx->mType = IoType::Send;
-
-	memcpy(ctx->buffer, data, len);
-	ctx->wsaBuf.buf = ctx->buffer;
-	ctx->wsaBuf.len = static_cast<ULONG>(len);
-
 	DWORD sentBytes = 0;
 	int result = ::WSASend(
 		session->hSocket,
@@ -341,20 +372,20 @@ bool IOCP_Server::PostSend(ClientSession* session, IoContext* ctx, const char* d
 	return true;
 }
 
-bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD bytes)
+bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* old_ctx, DWORD bytes)
 {
 	// 1. 클라이언트가 소켓을 정상적으로 닫고 연결을 끊은 경우.
 	if (bytes == 0)
 	{
 		mApp->CloseSession(session);
-		delete ctx; // IoContext는 더 이상 필요 없으므로 해제
+		delete old_ctx; //IoContext는 더 이상 필요 없으므로 해제
 		Log(u8"클라이언트가 정상적으로 연결을 종료함.");
 		return true;
 	}
 
 	// 2. 데이터 수신 처리: PacketHeader 기반으로 조립
 	constexpr size_t HEADER_SIZE = sizeof(PacketHeader);
-	const char* src = ctx->buffer;
+	const char* src = old_ctx->buffer;
 	size_t srcOffset = 0;
 	size_t remaining = static_cast<size_t>(bytes);
 
@@ -389,7 +420,7 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD 
 			{
 				Log(u8"비정상적으로 큰 패킷을 감지하여 연결을 종료합니다.");
 				mApp->CloseSession(session);
-				delete ctx;
+				delete old_ctx;
 				return false;
 			}
 		}
@@ -415,7 +446,16 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD 
 		if (ab.size() >= totalNeeded)
 		{
 			std::string payload(ab.data() + HEADER_SIZE, ab.data() + totalNeeded);
-			mApp->SendMessageAll(payload, session);
+
+			switch (header.cmd)
+			{
+			case CMDCODE::ChatMessage:
+				mApp->SendMessageAll(payload, session);
+				break;
+			default:
+				mApp->SendMessageAll(payload, session);
+				break;
+			}
 
 			// 처리한 바이트(헤더+payload)를 assemblyBuffer에서 삭제
 			ab.erase(ab.begin(), ab.begin() + totalNeeded);
@@ -424,11 +464,10 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD 
 		}
 	}
 
-	// 수신 버퍼 초기화 및 다음 recv 등록
-	memset(ctx->buffer, 0, sizeof(ctx->buffer));
-	if (!mApp->PostRecv(session, ctx))
+	delete old_ctx;
+
+	if (!mApp->PostRecv(session))
 	{
-		delete ctx;
 		ErrorHandler(L"WSARecv 등록에 실패했습니다.");
 		return false;
 	}
@@ -439,7 +478,6 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD 
 bool IOCP_Server::OnSendCompleted(ClientSession* session, IoContext* ctx, DWORD bytes)
 {
 	//WSASend() 가 부분전송 되었을 가능성.
-
 	ctx->transferredLen += bytes;
 	if (ctx->transferredLen < ctx->totalLen)
 	{
@@ -465,7 +503,8 @@ bool IOCP_Server::OnSendCompleted(ClientSession* session, IoContext* ctx, DWORD 
 		}
 		return true;
 	}
+	else //모두 전송되었으므로 ctx 삭제.
+		delete ctx;
 
-	delete ctx;
 	return true;
 }

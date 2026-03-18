@@ -27,8 +27,8 @@ private:
 	static DWORD WINAPI IOCP_AcceptThread(LPVOID pParam);
 	static DWORD WINAPI IOCP_WorkerThread(LPVOID pParam);
 
-	bool PostRecv(ClientSession* session, IoContext* ctx);
-	bool PostSend(ClientSession* session, IoContext* ctx, const char* data, size_t len);
+	bool PostRecv(ClientSession* session);
+	bool PostSend(ClientSession* session, IoContext* ctx);
 	bool OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD bytes);
 	bool OnSendCompleted(ClientSession* session, IoContext* ctx, DWORD bytes);
 
