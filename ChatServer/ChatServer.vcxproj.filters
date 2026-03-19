@@ -21,6 +21,12 @@
     <ClCompile Include="IOCP_Server.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="..\SQLlite\sqlite3.c">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="DBManager.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ClientSession.h">
@@ -33,6 +39,12 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Protocol.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\SQLlite\sqlite3.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="DBManager.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>

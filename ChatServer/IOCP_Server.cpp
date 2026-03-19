@@ -1,5 +1,6 @@
 #include "IOCP_Server.h"
 #include "ClientSession.h"
+#include "DBManager.h"
 
 void Log(const std::string& str)
 {
@@ -12,6 +13,14 @@ bool IOCP_Server::Initialize()
 {
 	assert(mApp == nullptr);
 	mApp = this;
+
+	DBManager db;
+
+	if (!db.Open("chat.db"))
+		return false;
+
+	if (!db.CreateUserTable())
+		return false;
 
 	WSADATA wsaData = { 0 };
 	if (::WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
@@ -156,10 +165,10 @@ void IOCP_Server::CloseSession(ClientSession* session)
 		::shutdown(hSocket, SD_BOTH);
 		::closesocket(hSocket);
 		hSocket = INVALID_SOCKET;
-	}
 
-	delete session;
-	session = nullptr;
+		delete session;
+		session = nullptr;
+	}
 }
 
 BOOL IOCP_Server::CtrlHandler(DWORD dwType)
@@ -190,7 +199,7 @@ void IOCP_Server::SendMessageAll(const std::string& str, ClientSession* session)
 	const size_t payloadSize = str.size();
 
 	PacketHeader header;
-	header.cmd = CMDCODE::ChatMessage;
+	header.cmd = static_cast<CMDCODE>(htons(static_cast<uint16_t>(CMDCODE::ChatMessage)));
 	header.payloadSize = htonl(static_cast<uint32_t>(payloadSize)); //호스트->네트워크
 
 	if (headerSize + str.size() > BUFFER_SIZE)
@@ -419,7 +428,6 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* old_ctx, DW
 			if (payloadSize > MAX_PAYLOAD)
 			{
 				Log(u8"비정상적으로 큰 패킷을 감지하여 연결을 종료합니다.");
-				mApp->CloseSession(session);
 				delete old_ctx;
 				return false;
 			}

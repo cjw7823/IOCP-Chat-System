@@ -127,11 +127,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\SQLlite\sqlite3.c" />
     <ClCompile Include="ChatServer.cpp" />
+    <ClCompile Include="DBManager.cpp" />
     <ClCompile Include="IOCP_Server.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\SQLlite\sqlite3.h" />
     <ClInclude Include="ClientSession.h" />
+    <ClInclude Include="DBManager.h" />
     <ClInclude Include="IOCP_Server.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="Protocol.h" />

@@ -11,6 +11,7 @@
 #include <string>
 
 #include "Protocol.h"
+#include "../SQLlite/sqlite3.h"
 
 inline std::string WideToUTF8(const std::wstring& wstr)
 {
