@@ -9,7 +9,7 @@ using System.Windows;
 
 namespace ChatClient.ViewModel
 {
-    public partial class MainViewModel : ObservableObject
+    public partial class MainViewModel : ObservableObject, IDisposable
     {
         [ObservableProperty]
         private object? currentViewModel;
@@ -33,6 +33,11 @@ namespace ChatClient.ViewModel
         public void ShowLoginPage()
         {
             CurrentViewModel = new LoginViewModel(this, _networkClient);
+        }
+
+        public void Dispose()
+        {
+            _networkClient.Dispose();
         }
     }
 }

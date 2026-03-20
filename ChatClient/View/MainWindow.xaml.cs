@@ -14,13 +14,20 @@ namespace ChatClient.View
 {
     public partial class MainWindow : Window
     {
-        [ObservableProperty]
-        private string title = "채팅창";
-
         public MainWindow()
         {
             InitializeComponent();
+            Title = "채팅창";
             DataContext = new ViewModel.MainViewModel();
+            Closed += MainWindow_Closed;
+        }
+
+        private void MainWindow_Closed(object? sender, EventArgs e)
+        {
+            if (DataContext is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
         }
     }
 }
