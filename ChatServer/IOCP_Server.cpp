@@ -1,6 +1,7 @@
 #include "IOCP_Server.h"
 #include "ClientSession.h"
-#include "DBManager.h"
+
+#pragma comment(lib, "libsodium.lib")
 
 void Log(const std::string& str)
 {
@@ -14,12 +15,13 @@ bool IOCP_Server::Initialize()
 	assert(mApp == nullptr);
 	mApp = this;
 
-	DBManager db;
-
-	if (!db.Open("chat.db"))
+	if (sodium_init() < 0)
 		return false;
 
-	if (!db.CreateUserTable())
+	if (!mDB.Open("chat.db"))
+		return false;
+
+	if (!mDB.CreateUserTable())
 		return false;
 
 	WSADATA wsaData = { 0 };
@@ -195,14 +197,30 @@ void IOCP_Server::SendMessageAll(const std::string& str, ClientSession* session)
 	}
 	::LeaveCriticalSection(&mCS);
 
+	const std::string& senderId = session->userID;
+
+	const uint16_t senderIdLen = static_cast<uint16_t>(senderId.size());
+	const uint16_t messageLen = static_cast<uint16_t>(str.size());
+
+	ChatExtHeader chatExt{};
+	chatExt.senderIdLen = htons(senderIdLen);
+	chatExt.messageLen = htons(messageLen);
+
 	const size_t headerSize = sizeof(PacketHeader);
 	const size_t payloadSize = str.size();
 
-	PacketHeader header;
-	header.cmd = static_cast<CMDCODE>(htons(static_cast<uint16_t>(CMDCODE::ChatMessage)));
-	header.payloadSize = htonl(static_cast<uint32_t>(payloadSize)); //호스트->네트워크
+	PacketHeader header{};
+	header.cmd = htons(static_cast<uint16_t>(CMDCODE::ChatMessage));
+	header.extHeaderSize = htons(static_cast<uint16_t>(sizeof(ChatExtHeader)));
+	header.payloadSize = htonl(static_cast<uint32_t>(senderIdLen + messageLen)); //호스트->네트워크
 
-	if (headerSize + str.size() > BUFFER_SIZE)
+	const size_t totalLen =
+		sizeof(PacketHeader) +
+		sizeof(ChatExtHeader) +
+		senderIdLen +
+		messageLen;
+
+	if (totalLen > BUFFER_SIZE)
 	{
 		Log(u8"전송할 메세지 크기가 너무 큽니다.");
 		ErrorHandler(L"전송할 메세지 크기가 너무 큽니다.");
@@ -211,10 +229,21 @@ void IOCP_Server::SendMessageAll(const std::string& str, ClientSession* session)
 	for (auto& s : targets)
 	{
 		IoContext* ctx = new IoContext(s, IoType::Send);
-		ctx->totalLen = headerSize + payloadSize;
+		ctx->totalLen = totalLen;
 
-		memcpy(ctx->buffer, &header, headerSize);
-		memcpy(ctx->buffer + headerSize, str.c_str(), payloadSize);
+		size_t offset = 0;
+
+		memcpy(ctx->buffer + offset, &header, sizeof(PacketHeader));
+		offset += sizeof(PacketHeader);
+
+		memcpy(ctx->buffer + offset, &chatExt, sizeof(ChatExtHeader));
+		offset += sizeof(ChatExtHeader);
+
+		memcpy(ctx->buffer + offset, senderId.data(), senderIdLen);
+		offset += senderIdLen;
+
+		memcpy(ctx->buffer + offset, str.data(), messageLen);
+		offset += messageLen;
 
 		//중요. recv는 상관없지만(최대 버퍼만큼 받으므로) send는 얼마나 보낼지
 		//Descriptor에 명시.
@@ -418,9 +447,17 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* old_ctx, DW
 		}
 
 		//헤더를 파싱하여 payloadSize 계산
-		PacketHeader header;
-		memcpy(&header, ab.data(), HEADER_SIZE);
-		uint32_t payloadSize = ntohl(header.payloadSize); // 네트워크 바이트 순서 -> 호스트 바이트 순서
+		PacketHeader netHeader;
+		memcpy(&netHeader, ab.data(), HEADER_SIZE);
+
+		PacketHeader hostHeader;
+		hostHeader.cmd = ntohs(netHeader.cmd);
+		hostHeader.extHeaderSize = ntohs(netHeader.extHeaderSize);
+		hostHeader.payloadSize = ntohl(netHeader.payloadSize);
+
+		const CMDCODE cmd = static_cast<CMDCODE>(hostHeader.cmd);
+		const uint16_t extHeaderSize = hostHeader.extHeaderSize;
+		const uint32_t payloadSize = hostHeader.payloadSize;
 
 		{
 			//안전 장치: 비정상적으로 큰 payloadSize를 걸러냄 (예: 10MB 제한)
@@ -433,7 +470,10 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* old_ctx, DW
 			}
 		}
 
-		size_t totalNeeded = HEADER_SIZE + static_cast<size_t>(payloadSize);
+		const size_t totalNeeded =
+			HEADER_SIZE +
+			static_cast<size_t>(extHeaderSize) +
+			static_cast<size_t>(payloadSize);
 
 		//payload가 모두 들어올 때까지 추가
 		if (ab.size() < totalNeeded)
@@ -453,22 +493,44 @@ bool IOCP_Server::OnRecvCompleted(ClientSession* session, IoContext* old_ctx, DW
 		//전체 패킷이 완성
 		if (ab.size() >= totalNeeded)
 		{
-			std::string payload(ab.data() + HEADER_SIZE, ab.data() + totalNeeded);
+			const char* packetBase = ab.data();
+			const char* extHeaderPtr = packetBase + HEADER_SIZE;
+			const char* payloadPtr = extHeaderPtr + extHeaderSize;
+			std::string message(payloadPtr, payloadPtr + payloadSize);
 
-			switch (header.cmd)
+			switch (cmd)
 			{
 			case CMDCODE::ChatMessage:
-				mApp->SendMessageAll(payload, session);
+				// 클라이언트 -> 서버 채팅은 확장헤더 없이 메시지만 보낸다.
+				if (extHeaderSize != 0)
+				{
+					Log(u8"클라이언트 채팅 패킷의 extHeaderSize가 0이 아님");
+					delete old_ctx;
+					return false;
+				}
+
+				if (!session->isLoggedIn)
+				{
+					Log(u8"로그인되지 않은 사용자의 채팅 요청");
+					delete old_ctx;
+					return false;
+				}
+				mApp->SendMessageAll(message, session);
+				break;
+			case CMDCODE::LoginRequest:
+				mApp->HandleLoginRequest(message, session);
+				break;
+			case CMDCODE::RegisterRequest:
+				mApp->HandleRegistRequest(message, session);
 				break;
 			default:
-				mApp->SendMessageAll(payload, session);
-				break;
+				Log(u8"CMDCODE Error");
+				ErrorHandler(L"CMDCODE Error");
+				delete old_ctx;
+				return false;
 			}
 
-			// 처리한 바이트(헤더+payload)를 assemblyBuffer에서 삭제
 			ab.erase(ab.begin(), ab.begin() + totalNeeded);
-
-			// 이어서 assemblyBuffer에 남아있는 데이터가 있으면 루프를 통해 다음 패킷도 처리
 		}
 	}
 
@@ -515,4 +577,139 @@ bool IOCP_Server::OnSendCompleted(ClientSession* session, IoContext* ctx, DWORD 
 		delete ctx;
 
 	return true;
+}
+
+bool IOCP_Server::HandleLoginRequest(const std::string& payload, ClientSession* session)
+{
+	if (payload.size() != sizeof(LoginRequestBody))
+	{
+		SendAuthResponse(session, CMDCODE::LoginResponse, AuthResult::ServerError);
+		return false;
+	}
+
+	LoginRequestBody body{};
+	memcpy(&body, payload.data(), sizeof(LoginRequestBody));
+
+	std::string id(body.id);
+	std::string pw(body.pw);
+
+	if (id.empty() || pw.empty())
+	{
+		SendAuthResponse(session, CMDCODE::LoginResponse, AuthResult::InvalidId);
+		return true;
+	}
+
+	std::string storedHash;
+	bool found = mDB.GetUserAuthData(id, storedHash);
+
+	if (!found)
+	{
+		SendAuthResponse(session, CMDCODE::LoginResponse, AuthResult::InvalidId);
+		return true;
+	}
+
+	if (!VerifyPassword(storedHash, pw))
+	{
+		SendAuthResponse(session, CMDCODE::LoginResponse, AuthResult::WrongPassword);
+		return true;
+	}
+
+	session->isLoggedIn = true;
+	session->userID = id;
+
+	SendAuthResponse(session, CMDCODE::LoginResponse, AuthResult::Success);
+	return true;
+}
+
+bool IOCP_Server::HandleRegistRequest(const std::string& payload, ClientSession* session)
+{
+	if (payload.size() != sizeof(RegisterRequestBody))
+	{
+		SendAuthResponse(session, CMDCODE::RegisterResponse, AuthResult::ServerError);
+		return false;
+	}
+
+	RegisterRequestBody body{};
+	memcpy(&body, payload.data(), sizeof(RegisterRequestBody));
+
+	std::string id(body.id);
+	std::string pw(body.pw);
+
+	if (id.empty() || pw.empty())
+	{
+		SendAuthResponse(session, CMDCODE::RegisterResponse, AuthResult::InvalidId);
+		return true;
+	}
+
+	std::string hashedPW = MakePasswordHash(pw);
+	if (hashedPW.empty())
+	{
+		SendAuthResponse(session, CMDCODE::RegisterResponse, AuthResult::ServerError);
+		return false;
+	}
+
+	bool result = mDB.RegisterUser(id, hashedPW);
+
+	if (!result)
+	{
+		SendAuthResponse(session, CMDCODE::RegisterResponse, AuthResult::DuplicateId);
+		return true;
+	}
+
+	//session->isLoggedIn = true;
+	//session->userID = id;
+
+	SendAuthResponse(session, CMDCODE::RegisterResponse, AuthResult::Success);
+	return true;
+}
+
+bool IOCP_Server::SendAuthResponse(ClientSession* session, CMDCODE cmd, AuthResult result)
+{
+	AuthResponseBody body{};
+	body.result = htons(static_cast<uint16_t>(result));
+
+	PacketHeader header{};
+	header.cmd = htons(static_cast<uint16_t>(cmd));
+	header.extHeaderSize = htons(0);
+	header.payloadSize = htonl(sizeof(AuthResponseBody));
+
+	IoContext* ctx = new IoContext(session, IoType::Send);
+	ctx->totalLen = sizeof(PacketHeader) + sizeof(AuthResponseBody);
+
+	memcpy(ctx->buffer, &header, sizeof(PacketHeader));
+	memcpy(ctx->buffer + sizeof(PacketHeader), &body, sizeof(AuthResponseBody));
+
+	ctx->wsaBuf.len = static_cast<ULONG>(ctx->totalLen);
+
+	if (!PostSend(session, ctx))
+	{
+		delete ctx;
+		return false;
+	}
+
+	return true;
+}
+
+std::string IOCP_Server::MakePasswordHash(const std::string& password)
+{
+	char hashed[crypto_pwhash_STRBYTES];
+	ZeroMemory(&hashed, crypto_pwhash_STRBYTES);
+
+	if (crypto_pwhash_str(
+		hashed,
+		password.c_str(),
+		password.size(),
+		crypto_pwhash_OPSLIMIT_INTERACTIVE,
+		crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
+		return "";
+
+	return std::string(hashed);
+}
+
+bool IOCP_Server::VerifyPassword(const std::string& storedHash, const std::string& password)
+{
+	return crypto_pwhash_str_verify(
+		storedHash.c_str(),
+		password.c_str(),
+		password.size()) == 0;
 }

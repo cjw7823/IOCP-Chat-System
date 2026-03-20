@@ -13,6 +13,9 @@
 #include "Protocol.h"
 #include "../SQLlite/sqlite3.h"
 
+#define SODIUM_STATIC = 1
+#include <sodium.h>
+
 inline std::string WideToUTF8(const std::wstring& wstr)
 {
 	int size = WideCharToMultiByte(

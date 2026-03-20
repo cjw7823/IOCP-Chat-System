@@ -12,8 +12,8 @@ public:
     void Close();
 
     bool CreateUserTable();
-    bool RegisterUser(const std::string& id, const std::string& hash, const std::string& salt);
-    bool GetUserAuthData(const std::string& id, std::string& outHash, std::string& outSalt);
+    bool RegisterUser(const std::string& id, const std::string& passwordHash);
+    bool GetUserAuthData(const std::string& id, std::string& outPasswordHash);
 
 private:
     sqlite3* mDB = nullptr;

@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "DBManager.h"
 
 #define MAX_THREAD_CNT 4
 
@@ -32,6 +33,13 @@ private:
 	bool OnRecvCompleted(ClientSession* session, IoContext* ctx, DWORD bytes);
 	bool OnSendCompleted(ClientSession* session, IoContext* ctx, DWORD bytes);
 
+	bool HandleLoginRequest(const std::string& payload, ClientSession* session);
+	bool HandleRegistRequest(const std::string& payload, ClientSession* session);
+	bool SendAuthResponse(ClientSession* session, CMDCODE cmd, AuthResult result);
+
+	std::string MakePasswordHash(const std::string& password);
+	bool VerifyPassword(const std::string& storedHash, const std::string& password);
+
 private:
 	inline static IOCP_Server* mApp = nullptr;
 	HANDLE mhIOCP = nullptr;
@@ -39,6 +47,7 @@ private:
 	SOCKET mListenSocket = INVALID_SOCKET;
 
 	CRITICAL_SECTION mCS;
+	DBManager mDB;
 
 	// 데이터 크기가 작으므로 중간 삭제가 잦더라도 캐쉬 친화적인 vector 사용.(list 대신.)
 	std::vector<ClientSession*> mSessions;

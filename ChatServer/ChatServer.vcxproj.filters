@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Lib">
+      <UniqueIdentifier>{b6d38929-4b52-41f6-b659-c9e39b5a9f98}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ChatServer.cpp">
@@ -21,11 +24,11 @@
     <ClCompile Include="IOCP_Server.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="..\SQLlite\sqlite3.c">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="DBManager.cpp">
       <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="..\SQLlite\sqlite3.c">
+      <Filter>Lib</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -41,11 +44,14 @@
     <ClInclude Include="Protocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="..\SQLlite\sqlite3.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="DBManager.h">
       <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="..\SQLlite\sqlite3.h">
+      <Filter>Lib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\libsodium\include\sodium.h">
+      <Filter>Lib</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

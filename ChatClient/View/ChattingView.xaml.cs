@@ -1,4 +1,8 @@
-﻿using System.Text;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -9,14 +13,17 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 
-namespace ChatClient.Page
+namespace ChatClient.View
 {
-    public partial class MainWindow : Window
+    /// <summary>
+    /// ChattingPage.xaml에 대한 상호 작용 논리
+    /// </summary>
+    public partial class ChattingView : UserControl
     {
-        public MainWindow()
+        public ChattingView()
         {
             InitializeComponent();
-            DataContext = new ViewModel.MainViewModel();
+            //DataContext = new ViewModel.ChattingViewModel();
         }
 
         private void TextBox_TextChanged(object sender, TextChangedEventArgs e)

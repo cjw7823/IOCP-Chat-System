@@ -8,6 +8,9 @@ struct ClientSession
 {
     SOCKET hSocket = INVALID_SOCKET;
     std::vector<char> assemblyBuffer;
+
+	bool isLoggedIn = false;
+	std::string userID;
 };
 
 enum class IoType

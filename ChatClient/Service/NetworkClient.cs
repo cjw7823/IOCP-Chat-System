@@ -12,8 +12,14 @@ namespace ChatClient.Service
         private NetworkStream? _stream;
         private Thread? _receiveThread;
         private volatile bool _running;
+        public class Packet
+        {
+            public CMDCODE Cmd;
+            public byte[]? ExtHeader;   //ushort,ushort
+            public byte[]? Payload;
+        }
 
-        public event Action<CMDCODE, string>? PacketReceived;
+        public event Action<Packet>? PacketReceived;
         public event Action<string>? SystemLog;
 
         public bool IsConnected => _client?.Connected == true;
@@ -74,6 +80,26 @@ namespace ChatClient.Service
             }
         }
 
+        public bool Send(CMDCODE cmd, byte[] data)
+        {
+            if (_stream == null)
+                return false;
+
+            try
+            {
+                byte[] payload = data;
+                byte[] packet = Protocol.BuildPacket(cmd, payload);
+                _stream.Write(packet, 0, packet.Length);
+                _stream.Flush();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                SystemLog?.Invoke($"전송 실패: {ex.Message}");
+                return false;
+            }
+        }
+
         private void ReceiveLoop()
         {
             try
@@ -81,7 +107,7 @@ namespace ChatClient.Service
                 while (_running && _stream != null)
                 {
                     byte[] headerBuffer = ReadExact(_stream, Protocol.HeaderSize);
-                    Protocol.ReadHeader(headerBuffer, out CMDCODE cmd, out uint payloadSize);
+                    Protocol.ReadHeader(headerBuffer, out CMDCODE cmd, out ushort extHeaderSize, out uint payloadSize);
 
                     switch (cmd)
                     {
@@ -93,6 +119,14 @@ namespace ChatClient.Service
                             // payload 없어도 의미 있을 수 있음
                             break;
 
+                        case CMDCODE.LoginResponse:
+                            if (payloadSize == 0) continue;
+                            break;
+
+                        case CMDCODE.RegisterResponse:
+                            if (payloadSize == 0) continue;
+                            break;
+
                         default:
                             // 알 수 없는 cmd면 payload는 소비해야 스트림 정렬이 안 깨짐
                             if (payloadSize > 0)
@@ -100,12 +134,20 @@ namespace ChatClient.Service
                             continue;
                     }
 
+                    byte[] extHeaderBuffer = extHeaderSize > 0
+                        ? ReadExact(_stream, (int)extHeaderSize)
+                        : Array.Empty<byte>();
+
                     byte[] payloadBuffer = payloadSize > 0
                         ? ReadExact(_stream, (int)payloadSize)
                         : Array.Empty<byte>();
 
-                    string text = Protocol.DecodeString(payloadBuffer);
-                    PacketReceived?.Invoke(cmd, text);
+                    Packet packet = new Packet();
+                    packet.Cmd = cmd;
+                    packet.ExtHeader = extHeaderBuffer;
+                    packet.Payload = payloadBuffer;
+
+                    PacketReceived?.Invoke(packet); //payloadBuffer는 ntoh안함.
                 }
             }
             catch (Exception ex)
