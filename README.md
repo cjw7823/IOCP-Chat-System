@@ -26,7 +26,7 @@ graph TD
 - WPF (.NET)
 
 ### 외부 라이브러리
-- libsodium  
+- libsodium(v1.0.21)  
   → 비밀번호 암호화
 
 - SQLite  
